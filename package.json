@@ -1,0 +1,11 @@
+{
+  "name": "solana-fdtn-del-db",
+  "version": "1.0.0",
+  "description": "Scripts for updating the Solana Foudnation Delegation Program database",
+  "main": "index.js",
+  "author": "alex@planetariummusic.com",
+  "license": "MIT",
+  "dependencies": {
+    "pg": "^8.7.1"
+  }
+}
