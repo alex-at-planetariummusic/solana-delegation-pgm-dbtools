@@ -5,8 +5,12 @@ import { Client } from 'pg';
 import {config} from 'dotenv';
 config();
 
+
+const sslConfig = null;
+// const sslConfig = {
+//   rejectUnauthorized: false
+// }
+
 export default new Client({
-  ssl: {
-    rejectUnauthorized: false
-  }
+  ssl: sslConfig
 });

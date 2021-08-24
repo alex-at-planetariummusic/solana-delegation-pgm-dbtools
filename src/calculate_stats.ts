@@ -1,22 +1,7 @@
 import client from './utils/client';
 import {QueryResult} from "pg";
+import {EpochStat, getMostRecentEpochInDBForCluster, TABLES} from "./utils/db_utils";
 
-enum EpochStat {
-  None = 'None',
-  Baseline = 'Baseline',
-  Bonus = 'Bonus',
-}
-
-enum Cluster {
-  Testnet = 'testnet',
-  MainnetBeta = 'mainnet-beta'
-}
-
-const TABLES = {
-  EpochStats: '"EpochStats"',
-  ValidatorStats: '"ValidatorStats"',
-  ValidatorEpochStats: '"ValidatorEpochStats"'
-};
 
 // "main"
 (async () => {
@@ -40,6 +25,7 @@ const TABLES = {
   }
 
   console.log('DONE!');
+  process.exit(0);
 })()
 
 async function getValidatorEpochStats(validator_pk: String): Promise<Record<string, any>[]> {
@@ -52,30 +38,6 @@ async function getValidatorEpochStats(validator_pk: String): Promise<Record<stri
   return result.rows;
 }
 
-const mostRecentEpochCache = {}
-
-/**
- * memoized
- *
- * @param cluster
- */
-async function getMostRecentEpoch(cluster: Cluster): Promise<number> {
-  if (!mostRecentEpochCache[cluster]) {
-    const res: QueryResult = await client.query(
-      `SELECT max(epoch) as epoch 
-        FROM ${TABLES.EpochStats}
-        WHERE cluster=$1`,
-      [cluster]
-    )
-
-    if (res.rows.length !== 1) {
-      throw new Error(`No max epoch found for ${cluster}`);
-    }
-    mostRecentEpochCache[cluster] = res.rows[0].epoch;
-  }
-
-  return mostRecentEpochCache[cluster]
-}
 
 async function calculateValidatorEpochStats(validatorEpochStats: Record<string, any>[]) {
   const stats = {
@@ -101,7 +63,7 @@ async function calculateValidatorStats(validatorStat: Record<string, any>, valid
     num_bonus_last_10: 0,
   };
 
-  const mostRecentEpoch = await getMostRecentEpoch(validatorStat.cluster)
+  const mostRecentEpoch = await getMostRecentEpochInDBForCluster(validatorStat.cluster)
 
   let numberSkiprateMeasurements = 0;
   let numberSelfStakeMeasurements = 0;
