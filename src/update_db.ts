@@ -10,12 +10,12 @@ import {
   VALIDATOR_PARTICIPANT_STATE_ID_TO_KEY,
   VALIDATOR_PARTICIPANT_STATES
 } from "./utils/constants";
-import {clusterApiUrl, Connection} from "@solana/web3.js";
+import {clusterApiUrl, Connection, PublicKey} from "@solana/web3.js";
 
 
 (async () => {
+  await loadRepo();
   await client.connect();
-  // await loadRepo();
   try {
     await client.query('BEGIN');
 
@@ -28,9 +28,15 @@ import {clusterApiUrl, Connection} from "@solana/web3.js";
     // console.log('delegation accounts', delegationProgramAccounts);
 
 
+    // update ValidatorKeyPair table
     for (let i = 0; i < delegationProgramAccounts.length; i++) {
       const account = delegationProgramAccounts[i].account;
+
+      const owner: PublicKey = account.owner;
+
       console.log(account);
+      // console.log(owner.toBase58());
+
 
       // Rust struct defined in git@github.com:solana-labs/stake-o-matic.git program/src/state.rs
       // pub struct Participant {
@@ -44,6 +50,9 @@ import {clusterApiUrl, Connection} from "@solana/web3.js";
       console.log(`TN: ${testnet_key}`);
       console.log(`MN: ${mainnet_key}`);
       console.log(`STATE: ${state}`);
+
+      // find the row
+      // await client.query
 
     }
 

@@ -14,9 +14,10 @@ export enum Cluster {
 
 export const TABLES = {
   EpochStats: '"EpochStats"',
+  SolanaValidatorKYC: '"SolanaValidatorKYC"',
   ValidatorStats: '"ValidatorStats"',
   ValidatorEpochStats: '"ValidatorEpochStats"',
-  ValidatorKeyPair: '"ValidatorKeyPair"'
+  ValidatorKeyPair: '"ValidatorKeyPair"',
 };
 
 const mostRecentEpochCache = {}
