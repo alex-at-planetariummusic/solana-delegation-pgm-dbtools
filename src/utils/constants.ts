@@ -32,3 +32,15 @@ export const VALIDATOR_PARTICIPANT_STATE_ID_TO_KEY = Object.entries(
   acc[entry[1]] = entry[0];
   return acc;
 }, {});
+
+export type Participant = {
+  mainnet_identity: PublicKey;
+  testnet_identity: PublicKey;
+  pubkey: PublicKey,
+  state: VALIDATOR_PARTICIPANT_STATES
+};
+
+export type DataCenter = {
+  location: string,
+  asn: number
+}

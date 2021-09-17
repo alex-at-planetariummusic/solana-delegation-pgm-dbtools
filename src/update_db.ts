@@ -1,76 +1,116 @@
-import {getEpochData, loadRepo} from "./utils/git";
-import {Cluster, TABLES} from "./utils/db_utils";
+import {getEpochData, getEpochsForCluster, loadRepo} from "./utils/git";
+import {Cluster, getEpochsInDbForCluster, TABLES} from "./utils/db_utils";
 import client from "./utils/client";
-// import bs58 from 'bs58';
-const bs58 = require("bs58");
 import {QueryResult} from "pg";
 import {
-  CLUSTERS,
-  DELEGATION_PROGRAM_KEY,
+  CLUSTERS, DataCenter,
+  DELEGATION_PROGRAM_KEY, Participant,
   VALIDATOR_PARTICIPANT_STATE_ID_TO_KEY,
   VALIDATOR_PARTICIPANT_STATES
 } from "./utils/constants";
-import {clusterApiUrl, Connection, PublicKey} from "@solana/web3.js";
+import {clusterApiUrl, Connection, LAMPORTS_PER_SOL, PublicKey} from "@solana/web3.js";
+import {getDelegationProgramAccounts} from "./utils/rpc_utils";
 
 
+// TODO: import keybase IDs
+
+// "main"
 (async () => {
   await loadRepo();
   await client.connect();
   try {
     await client.query('BEGIN');
 
-    console.log('in it')
-    // const mostRecentMainnetEpoch = getMostRecentEpochInDBForCluster(Cluster.MainnetBeta, )
-    // await insertEpochStats(Cluster.Testnet, 220);
 
-    const delegationProgramAccounts = await getDelegationProgramAccounts();
 
-    // console.log('delegation accounts', delegationProgramAccounts);
-
+    await updateKeypairTable(client)
 
     // update ValidatorKeyPair table
-    for (let i = 0; i < delegationProgramAccounts.length; i++) {
-      const account = delegationProgramAccounts[i].account;
-
-      const owner: PublicKey = account.owner;
-
-      console.log(account);
-      // console.log(owner.toBase58());
 
 
-      // Rust struct defined in git@github.com:solana-labs/stake-o-matic.git program/src/state.rs
-      // pub struct Participant {
-      //     pub testnet_identity: Pubkey, // offset 0 bytes
-      //     pub mainnet_identity: Pubkey, // offset 32 bytes
-      //     pub state: ParticipantState, // byte index 64
-      // }
-      const testnet_key = bs58.encode(account.data.slice(0, 32));
-      const mainnet_key = bs58.encode(account.data.slice(32, 64));
-      const state = VALIDATOR_PARTICIPANT_STATE_ID_TO_KEY[account.data[64]];
-      console.log(`TN: ${testnet_key}`);
-      console.log(`MN: ${mainnet_key}`);
-      console.log(`STATE: ${state}`);
 
-      // find the row
-      // await client.query
+    // load epoch data for each cluster/epoch
+    for (const clusterKey in Cluster) {
+      const cluster: Cluster = Cluster[clusterKey as keyof Cluster]
 
+      const epochs = await getEpochsForCluster(cluster);
+      const epochsInDb = await getEpochsInDbForCluster(cluster);
+
+      for (let i = 0; i < epochs.length; i++) {
+        const epoch = epochs[i];
+        const epochData = await getEpochData(cluster, epoch);
+        if (epochsInDb.indexOf(epoch) < 0) {
+          console.log(`Importing ${cluster}/${epoch}`);
+          await importEpochStats(cluster, epoch, epochData);
+          await importValidatorEpochStats(cluster, epoch, epochData);
+        }
+      }
     }
 
+    console.log('COMMITting');
     await client.query('COMMIT');
+
   } catch (e) {
     await client.query('ROLLBACK');
     console.error("Failed: ", e);
     process.exit(1);
     return;
+  } finally {
+    await client.end()
   }
 
   console.log('Done');
   process.exit(0);
 })();
 
+export async function updateKeypairTable(client) {
+  const delegationProgramAccounts = await getDelegationProgramAccounts();
+  const programAccounts: Participant[] = [];
+  const mnKeys: string[] = [];
 
-async function insertEpochStats(cluster: Cluster, epoch: number) {
-  const epochData = await getEpochData(cluster, epoch);
+  for (let i = 0; i < delegationProgramAccounts.length; i++) {
+    const account = delegationProgramAccounts[i].account;
+    console.log(delegationProgramAccounts[i].pubkey.toBase58());
+
+    // Rust struct defined in git@github.com:solana-labs/stake-o-matic.git program/src/state.rs
+    // pub struct Participant {
+    //     pub testnet_identity: Pubkey, // offset 0 bytes
+    //     pub mainnet_identity: Pubkey, // offset 32 bytes
+    //     pub state: ParticipantState, // byte index 64
+    // }
+    const participant: Participant = {
+      mainnet_identity: new PublicKey(account.data.slice(32, 64)),
+      testnet_identity: new PublicKey(account.data.slice(0, 32)),
+      state: VALIDATOR_PARTICIPANT_STATE_ID_TO_KEY[account.data[64]],
+      pubkey: delegationProgramAccounts[i].pubkey
+    }
+
+    const mnKey = participant.mainnet_identity.toBase58();
+    // console.log(participant);
+    console.log('mn:', mnKey);
+
+    if (mnKeys.indexOf(mnKey) !== -1) {
+      console.log("Duplicate MN key: ", mnKey);
+    }
+
+    mnKeys.push(mnKey);
+
+    // console.log('tn:', participant.testnet_identity.toBase58());
+    // // console.log(account);
+    // console.log('owner:', account.owner.toBase58());
+    // console.log('pubkey:', delegationProgramAccounts[i].pubkey.toBase58())
+    //
+    // console.log('---------------------------------------------')
+
+    programAccounts.push(participant);
+    await updateKeypairTableRow(client, participant);
+  }
+
+  await pruneValidatorKeyPairTable(client, programAccounts);
+}
+
+
+async function importEpochStats(cluster: Cluster, epoch: number, epochData: Record<string, any>) {
 
   // console.log(Object.keys(epochData));
 
@@ -106,23 +146,22 @@ async function insertEpochStats(cluster: Cluster, epoch: number) {
 
   const stats = epochData.V1.stats;
   const config = epochData.V1.config;
-
-  console.log(config);
+  // console.log(config);
 
   const statsDbData = {
     active_stake: stats.total_active_stake,
     avg_skip_rate: stats.cluster_average_skip_rate,
     max_skip_rate: stats.max_skip_rate,
     max_commission: config.max_commission,
-    max_self_stake: config.max_active_stake_lamports,
-    min_self_stake: config.min_self_stake_lamports,
+    max_self_stake: config.max_active_stake_lamports / LAMPORTS_PER_SOL,
+    min_self_stake: config.min_self_stake_lamports / LAMPORTS_PER_SOL,
     skip_rate_grace: config.min_epoch_credit_percentage_of_average,
-    stake_pool_size: 'todo',
+    // stake_pool_size: 'todo',
     avg_vote_credits: stats.avg_epoch_credits,
     min_vote_credits: stats.min_epoch_credits,
-    bonus_stake_amount: stats.bonus_stake_amount,
+    bonus_stake_amount: stats.bonus_stake_amount/ LAMPORTS_PER_SOL,
     min_solana_version: config.min_solana_version,
-    baseline_stake_amount: stats.baseline_stake_amount,
+    baseline_stake_amount: config.baseline_stake_amount_lamports / LAMPORTS_PER_SOL,
     // num_no_stake_validators: 17,
     // num_validators_processed: 550,
     // num_bonus_stake_validators: 477,
@@ -131,87 +170,168 @@ async function insertEpochStats(cluster: Cluster, epoch: number) {
     max_infrastructure_concentration: config.max_infrastructure_concentration,
     min_testnet_participation_numerator: config.min_testnet_participation_numerator?.[0],
     min_testnet_participation_denominator: config.min_testnet_participation_numerator?.[1],
-    // stake_pool_available_for_delegation: 'todo',
   };
 
-  console.log(statsDbData);
-
-  try {
-    console.log('doing query?????????????');
-
-    const res: QueryResult = await client.query(`INSERT INTO ${TABLES.EpochStats} (
+  await client.query(`INSERT INTO ${TABLES.EpochStats} (
       cluster,
       epoch,
       stats
     ) VALUES (
       $1, $2, $3
     )`, [
-      cluster,
-      epoch,
-      statsDbData
-    ]);
-    console.log('done?', res);
+    cluster,
+    epoch,
+    statsDbData
+  ]);
+}
 
-  } catch (e) {
-    console.error(':(');
-    console.error(e);
+
+function dataCenterToKey(dc: DataCenter) {
+  return `${dc.location}-${dc.asn}`;
+}
+
+
+async function importValidatorEpochStats(cluster: Cluster, epoch: number, epochStats: Record<string, any>) {
+
+  const validatorClassifications = epochStats.V1.validator_classifications;
+
+  const dataCentersInfo = epochStats.V1.data_center_info.reduce((acc, o) => {
+    acc[dataCenterToKey(o.id)] = o;
+    return acc;
+  }, {});
+
+  const classifications = Object.values(validatorClassifications);
+
+  console.log(`importValidatorEpochStats(): Importing ${classifications.length} validators for ${cluster}/${epoch}`);
+
+  for (let i = 0; i < classifications.length; i++) {
+    const classification: Record<any, any> = classifications[i];
+
+    const key = new PublicKey(classification.identity);
+
+    const dataCenterInfo = dataCentersInfo[dataCenterToKey(classification.current_data_center)];
+    const stats = {
+      notes: classification.notes,
+      slots: classification.slots,
+      blocks: classification.blocks,
+      state: classification.stake_state,
+      commission: classification.commission,
+      self_stake: classification.self_stake,
+      state_action: classification.stake_action,
+      state_reason: classification.stake_state_reason,
+      vote_credits: classification.vote_credits,
+      data_center_stake: dataCenterInfo.stake,
+      data_center_stake_percent: dataCenterInfo.stake_percent,
+      epoch_data_center: classification.current_data_center,
+    }
+
+    const match = await client.query(`SELECT id 
+        FROM ${TABLES.ValidatorEpochStats}
+        WHERE validator_pk=$1 AND
+                epoch=$2 AND
+                cluster=$3`,
+      [
+        key.toBase58(),
+        epoch,
+        cluster
+      ]);
+
+    if (match.rows.length === 1) {
+      await client.query(`UPDATE ${TABLES.ValidatorEpochStats}
+      SET stats = $1
+      WHERE id=$2`, [
+        stats,
+        match.rows[0].id
+      ])
+
+    } else if (match.rows.length === 0) {
+      await client.query(`INSERT INTO ${TABLES.ValidatorEpochStats}
+           (
+             validator_pk,
+             epoch,
+             cluster,
+             stats
+           ) VALUES (
+             $1, $2, $3, $4
+           )`, [
+        key.toBase58(),
+        epoch,
+        cluster,
+        stats
+      ]);
+
+    } else {
+      throw new Error(`> 1 row in ${TABLES.ValidatorEpochStats} for `)
+    }
   }
 }
 
-async function importValidatorEpochStats(cluster: Cluster, epoch: number) {
-  `UPDATE "ValidatorEpochStats"
-  SET epoch=$1,
-    cluster=$2,
-    stats=$3
-  WHERE id=$4`
 
+async function updateKeypairTableRow(client, participant: Participant): Promise<any> {
 
-
-
-
-}
-
-
-async function updateKeypairTable(mainnet_beta_key: string, testnet_key: string, state: VALIDATOR_PARTICIPANT_STATES): Promise<any> {
+  const mk = participant.mainnet_identity.toBase58();
+  const tk = participant.testnet_identity.toBase58();
 
   const matchingKeyPair = await client.query(`SELECT id, state 
     FROM ${TABLES.ValidatorKeyPair}
     WHERE mainnet_beta_pk=$1 AND
         testnet_pk=$2`,
-  [
-    mainnet_beta_key,
-    testnet_key,
-]);
+    [
+      mk,
+      tk
+    ]);
 
-  if (matchingKeyPair.rows.length > 1) {
-    throw new Error(`> 1 rows for mn ${mainnet_beta_key}, tn ${testnet_key}`)
-  } else if (matchingKeyPair.rows.length === 1) {
-
-
-  } else {
+  if (matchingKeyPair.rows.length === 1) {
+    if (matchingKeyPair.rows[0].state !== participant.state) {
+      await client.query(`UPDATE ${TABLES.ValidatorKeyPair}
+       SET state=$1
+       WHERE id= $2`, [
+        matchingKeyPair.rows[0].state,
+        matchingKeyPair.rows[0].id,
+      ])
+    }
+  } else if (matchingKeyPair.rows.length === 0) {
     await client.query(`INSERT INTO ${TABLES.ValidatorKeyPair} (
           mainnet_beta_pk,
-          testnet_pk
+          testnet_pk,
           state
         ) VALUES (
           $1,
           $2,
           $3
         )`, [
-          mainnet_beta_key,
-          testnet_key,
-          state
-    ])
+      mk,
+      tk,
+      participant.state
+    ]);
+  } else if (matchingKeyPair.rows.length > 1) {
+    throw new Error(`> 1 rows for mn ${mk}, tn ${tk}`)
+  } else {
+    throw new Error(`Huh? < 0 rows? Unlikely.`);
+  }
+}
+
+
+// async function getDelegationProgramAccounts(): Promise<Record<string, any>> {
+//   const connection = await new Connection(clusterApiUrl(CLUSTERS.MAINNET_BETA))
+//   return await connection.getParsedProgramAccounts(
+//     DELEGATION_PROGRAM_KEY,
+//   );
+// }
+
+async function pruneValidatorKeyPairTable(client, programAccounts: Participant[]): Promise<null> {
+  const validatorKeyPairs = await client.query(`SELECT * from ${TABLES.ValidatorKeyPair}`);
+
+  for (let i = 0; i < validatorKeyPairs.rows.length; i++) {
+    const row = validatorKeyPairs.rows[i];
+    const matches = programAccounts.find(pa => {
+      return row.testnet_pk === pa.testnet_identity.toBase58() && row.mainnet_beta_pk === pa.mainnet_identity.toBase58();
+    });
+
+    if (!matches) {
+      await client.query(`DELETE FROM ${TABLES.ValidatorKeyPair} WHERE id=${row.id}`)
+    }
   }
 
+  return null;
 }
-
-
-async function getDelegationProgramAccounts(): Promise<Record<string, any>> {
-  const connection = await new Connection(clusterApiUrl(CLUSTERS.MAINNET_BETA))
-  return await connection.getParsedProgramAccounts(
-    DELEGATION_PROGRAM_KEY,
-  );
-}
-
-

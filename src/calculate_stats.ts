@@ -5,6 +5,12 @@ import {EpochStat, getMostRecentEpochInDBForCluster, TABLES} from "./utils/db_ut
 
 // "main"
 (async () => {
+  await calculateStats();
+  console.log('DONE!');
+  process.exit(0);
+})()
+
+export async function calculateStats() {
   await client.connect();
 
   const validatorStats: QueryResult = await client.query(`SELECT * from ${TABLES.ValidatorStats}`);
@@ -23,10 +29,7 @@ import {EpochStat, getMostRecentEpochInDBForCluster, TABLES} from "./utils/db_ut
     await client.query(`UPDATE ${TABLES.ValidatorStats} SET calculated_stats=$1, stats=$2 WHERE id=$3`,
       [calculatedStats, validatorStats, row.id])
   }
-
-  console.log('DONE!');
-  process.exit(0);
-})()
+}
 
 async function getValidatorEpochStats(validator_pk: String): Promise<Record<string, any>[]> {
   const result: QueryResult = await client.query(

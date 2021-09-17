@@ -6,10 +6,11 @@
   "author": "alex@planetariummusic.com",
   "license": "MIT",
   "dependencies": {
-    "@solana/web3.js": "^1.24.1",
+    "@solana/web3.js": "^1.26.0",
     "@types/node": "^16.4.5",
     "@types/pg": "^8.6.1",
     "bs58": "^4.0.1",
+    "csvtojson": "^2.0.10",
     "dotenv": "^10.0.0",
     "js-yaml": "^4.1.0",
     "pg": "^8.7.1",
@@ -24,6 +25,7 @@
   "scripts": {
     "build": "tsc",
     "calculate_stats": "tsc; node build/calculate_stats.js",
-    "update_db": "tsc; node build/update_db.js"
+    "update_db": "tsc; node build/update_db.js",
+    "import_sheets": "tsc; node build/import_sheets.js"
   }
 }

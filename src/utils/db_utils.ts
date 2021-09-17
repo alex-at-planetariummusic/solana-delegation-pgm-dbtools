@@ -17,7 +17,7 @@ export const TABLES = {
   SolanaValidatorKYC: '"SolanaValidatorKYC"',
   ValidatorStats: '"ValidatorStats"',
   ValidatorEpochStats: '"ValidatorEpochStats"',
-  ValidatorKeyPair: '"ValidatorKeyPair"',
+  ValidatorKeyPair: '"ValidatorKeyPair"'
 };
 
 const mostRecentEpochCache = {}
@@ -45,4 +45,16 @@ export async function getMostRecentEpochInDBForCluster(cluster: Cluster): Promis
   }
 
   return mostRecentEpochCache[cluster]
+}
+
+
+export async function getEpochsInDbForCluster(cluster: Cluster): Promise<number[]> {
+  const res: QueryResult = await client.query(
+    `SELECT epoch  
+        FROM ${TABLES.EpochStats}
+        WHERE cluster=$1`,
+    [cluster]
+  )
+
+  return res.rows.map(r => r.epoch);
 }
