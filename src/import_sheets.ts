@@ -2,15 +2,14 @@ import client from "./utils/client";
 import {TABLES} from "./utils/db_utils";
 import {Participant} from "./utils/constants";
 import {
-  getDelegationProgramAccounts,
   getParsedDelegationProgramAccounts
 } from "./utils/rpc_utils";
 
 const csv = require('csvtojson')
 
 const JUMIO_SHEET = '../test_23082021(1).csv';
-const PUBLIC_REGISTRY_SHEET = '../Solana - Public Registry (12.May.2021) - Public Sheet.csv';
-const PRIVATE_REGISTRY_SHEET = '../Validator Registry - Validator Contact Info.csv';
+const PUBLIC_REGISTRY_SHEET = '../Solana - Public Registry (5.August.2021) - Public Sheet.csv';
+const PRIVATE_REGISTRY_SHEET = '../Validator Registry - Validator Contact Info (1).csv';
 
 /**
  * key: {
@@ -36,7 +35,9 @@ interface JoinedSheet {
 
   const joinedSheets: Record<string, JoinedSheet> = {}
 
+  console.log('getting registrations');
   const registrationKeys = await updateKeypairTableWithPubkey();
+  console.log('got registrations');
 
   Object.entries(registrationKeys).forEach(([k, v]) => {
     joinedSheets[k] = {
@@ -45,6 +46,7 @@ interface JoinedSheet {
   })
 
   // Process the contact sheet
+  console.log('parsing contacts');
   const contactSheet = await parseContactSheet();
 
   let solanaValidatorKYCMatchCount = 0;
@@ -52,12 +54,13 @@ interface JoinedSheet {
 
   let solanaValidatorKYCRowsToPrune = [];
 
-
+  console.log('looping over contacts and finding matching DB rows');
   for (const [keykey, contact] of Object.entries(contactSheet)) {
     // console.log('doing', contact);
     const testnetKey = contact['testnet_key'];
     const mainnetKey = trimmedOrNull(contact['mainnet_key']);
 
+    let registrationKey = null;
     let validatorKYCMatchResult;
     if (mainnetKey) {
       validatorKYCMatchResult = await client.query(
@@ -68,6 +71,7 @@ interface JoinedSheet {
           testnetKey,
           mainnetKey
         ]);
+      registrationKey = registrationKeys[keykey];
     } else if (testnetKey) {
       validatorKYCMatchResult = await client.query(
         `SELECT * FROM ${TABLES.SolanaValidatorKYC}
@@ -75,6 +79,9 @@ interface JoinedSheet {
         [
           testnetKey
         ]);
+      registrationKey = Object.values(registrationKeys).find(v => {
+        return v.testnet_key === testnetKey
+      });
 
     } else {
       console.error('no tn or mn key');
@@ -87,7 +94,6 @@ interface JoinedSheet {
     } else if (validatorKYCMatchResult.rows.length > 1) {
       // console.log(`${validatorKYCMatchResult.rows.length} matches for ${keykey}`);
 
-      // Pick the r
       validatorKYCMatchRow = validatorKYCMatchResult.rows.reduce((acc, r) => {
         // console.log(r);
         if (!acc) {
@@ -113,12 +119,12 @@ interface JoinedSheet {
 
     joinedSheets[keykey] = joinedSheets[keykey] || {};
     Object.assign(joinedSheets[keykey], {
-      registrationKeys: registrationKeys[keykey],
+      registrationKeys: registrationKey,
       kycDB: validatorKYCMatchRow,
       contact: contact
     })
   }
-  console.log('prune:', solanaValidatorKYCRowsToPrune);
+  console.log('rows to prune:', solanaValidatorKYCRowsToPrune);
 
 
   console.log('matches:', solanaValidatorKYCMatchCount);
@@ -126,6 +132,7 @@ interface JoinedSheet {
 
   ///////////////////////////////////////////////
   // now look for matches with the jumio entries
+  console.log('parsing Jumio records');
   const jumioRows = await parseJumioSheet();
   for (let [jumioID, jumioRow] of Object.entries(jumioRows)) {
     // first search for match in rows we already have
@@ -163,6 +170,7 @@ interface JoinedSheet {
 
 
   // loop through the public registry to find matches. The only data we import from the public registry is the tds stage (I think)
+  console.log('parsing public registry sheet');
   const publicRegistry = await parsePublicRegistry();
   for (const [keykey, publicRow] of Object.entries(publicRegistry)) {
 
@@ -175,6 +183,7 @@ interface JoinedSheet {
   }
   /// NOW we've got everything. Update or insert into the KYC table
 
+  console.log('Creating INSERT and UPDATE statements');
   const joinedSheetsValues = Object.values(joinedSheets);
   console.log(`${joinedSheetsValues.length} rows to insert or update`);
 
@@ -203,9 +212,13 @@ interface JoinedSheet {
       values.kycStatus = trimmedOrNull(joinedSheet.jumio['Verification Status']);
     } else if (joinedSheet.public?.['KYC Status']) {
       if (joinedSheet.public?.['KYC Status'] === 'Complete') {
-        values.kycID = 'Match';
+        values.kycID = 'MATCH';
         values.kycStatus = 'APPROVED_VERIFIED';
       }
+    }
+
+    if (!joinedSheet.kycDB?.hellosign_signature_id && joinedSheet.public?.['Participation Agreement Status']) {
+      values.hellosign_signature_id = "SIGNED_ON_DOCUSIGN"
     }
 
     if (joinedSheet.public?.['Foundation Delegation Program Onboarding Group']) {
@@ -215,8 +228,8 @@ values.tds_onboarding_group = joinedSheet.public?.['Foundation Delegation Progra
     values.email = trimmedOrNull(joinedSheet.contact?.email) || trimmedOrNull(joinedSheet.kycDB?.email);
     values.alternate_email = trimmedOrNull(joinedSheet.contact?.alternate_email);
     values.discordID = trimmedOrNull(joinedSheet.contact?.discordID) || trimmedOrNull(joinedSheet.kycDB?.['Discord ID']);
-    values.tdSPK = joinedSheet.registrationKeys?.testnet_key || trimmedOrNull(joinedSheet.kycDB?.tdSPK) || trimmedOrNull(joinedSheet.contact?.mainnet_key);
-    values.mbPK = joinedSheet.registrationKeys?.mainnet_key || trimmedOrNull(joinedSheet.kycDB?.mbPK) || trimmedOrNull(joinedSheet.contact?.testnet_key);
+    values.tdSPK = joinedSheet.registrationKeys?.testnet_key || trimmedOrNull(joinedSheet.kycDB?.tdSPK) || trimmedOrNull(joinedSheet.contact?.testnet_key);
+    values.mbPK = joinedSheet.registrationKeys?.mainnet_key || trimmedOrNull(joinedSheet.kycDB?.mbPK) || trimmedOrNull(joinedSheet.contact?.mainnet_key);
     if (joinedSheet.registrationKeys) {
       values.pubkey = trimmedOrNull(joinedSheet.registrationKeys.pubkey);
     }
@@ -273,9 +286,10 @@ values.tds_onboarding_group = joinedSheet.public?.['Foundation Delegation Progra
   }
 
   await client.query(
-    `DELETE FROM ${TABLES.SolanaValidatorKYC} 
+    `UPDATE ${TABLES.SolanaValidatorKYC} 
+    SET archived=true
     WHERE id in (${solanaValidatorKYCRowsToPrune.join(',')})`
-  )
+  );
 
   console.log('COMMIT transaction');
   await client.query(`COMMIT`);
@@ -337,11 +351,6 @@ async function parseContactSheet(): Promise<Record<string, any>> {
     newRow.discordID = row['Discord ID'];
     newRow.isInUSA = row['Is in USA'] === '1';
 
-    // if (newRow.email === 'darkheretik@gmail.com') {
-    //   console.log(newRow);
-    //   process.exit(0);
-    // }
-
     const keykey = keypairToToken(newRow.testnet_key, newRow.mainnet_key);
 
     if (acc[keykey]) {
@@ -359,7 +368,6 @@ function trimmedOrNull(string) {
   return string && string.trim().length !== 0 ? string.trim() : null
 }
 
-
 async function parsePublicRegistry(): Promise<Record<string, any>> {
   const sheet = await csv().fromFile(PUBLIC_REGISTRY_SHEET);
   return sheet.reduce((acc, r) => {
@@ -376,12 +384,14 @@ async function parsePublicRegistry(): Promise<Record<string, any>> {
   }, {});
 }
 
-async function updateKeypairTable() {
-  const delegationProgramAccounts = await getDelegationProgramAccounts();
+interface RegistrationKeys {
+  testnet_key: string
+  mainnet_key: string
+  pubkey: string
 
 }
 
-async function updateKeypairTableWithPubkey() {
+async function updateKeypairTableWithPubkey(): Promise<Record<string, RegistrationKeys>> {
 
   const keys = {};
 
@@ -411,6 +421,7 @@ async function updateKeypairTableWithPubkey() {
       ]
     );
 
+    console.log('UPDATE query');
     if (matchingKeypairRow.rows.length === 1) { // shouldn't be > 1
       await client.query(
         `UPDATE ${TABLES.ValidatorKeyPair}
